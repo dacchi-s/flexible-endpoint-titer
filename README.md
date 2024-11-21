@@ -57,7 +57,7 @@ conda activate flexible-endpoint-titer-analysis
 
 ## help
 ```
-usage: {program} [-h] --input INPUT --cutoff CUTOFF [--method {4,5,auto}] [--replicates {1,2}] [--verbose]
+usage: flexible-endpoint-titer.py [-h] --input INPUT --cutoff CUTOFF [--method {4,5,auto}] [--replicates {1,2}] [--verbose]
 
 ELISA Endpoint Titer Analysis Tool - Flexible Data Structure Version
 
@@ -75,16 +75,16 @@ options:
 
 Usage Examples:
   Basic usage:
-    {program} -i data.xlsx -c 0.2
+    flexible-endpoint-titer.py -i "path/to/data.xlsx" -c 0.2
   
   Single data analysis:
-    {program} -i single_data.xlsx -c 0.15 -r 1
+    flexible-endpoint-titer.py -i "path/to/single_data.xlsx" -c 0.15 -r 1
   
   Specify 4PL fitting:
-    {program} -i data.xlsx -c 0.2 -m 4
+    flexible-endpoint-titer.py -i "path/to/data.xlsx" -c 0.2 -m 4
   
   Output detailed analysis information:
-    {program} -i data.xlsx -c 0.2 -v
+    flexible-endpoint-titer.py -i "path/to/data.xlsx" -c 0.2 -v
 
 Input File Format:
   - Excel format (.xlsx)
