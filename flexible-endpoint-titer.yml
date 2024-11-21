@@ -1,0 +1,10 @@
+name: flexible-endpoint-titer-analysis
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pandas
+  - scipy
+  - openpyxl
+  - matplotlib
