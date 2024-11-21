@@ -38,6 +38,37 @@ def five_pl(x, A, B, C, D, E):
     """5-parameter logistic regression"""
     return D + (A-D)/(1.0+((x/C)**B))**E
 
+def load_data_file(file_path):
+    """
+    Load data from Excel or CSV file
+    
+    Parameters:
+    -----------
+    file_path : str or Path
+        Path to input file (Excel or CSV)
+    
+    Returns:
+    --------
+    pandas.DataFrame : Loaded data
+    """
+    file_path = Path(file_path)
+    if file_path.suffix.lower() == '.csv':
+        # CSV file handling
+        try:
+            df = pd.read_csv(file_path, header=None)
+        except Exception as e:
+            raise ValueError(f"Error reading CSV file: {str(e)}")
+    elif file_path.suffix.lower() in ['.xlsx', '.xls']:
+        # Excel file handling
+        try:
+            df = pd.read_excel(file_path, header=None)
+        except Exception as e:
+            raise ValueError(f"Error reading Excel file: {str(e)}")
+    else:
+        raise ValueError("Unsupported file format. Please use CSV or Excel file.")
+    
+    return df
+
 def detect_data_structure(df):
     """
     Detect data structure and identify number of dilution columns and valid data range
@@ -247,16 +278,14 @@ def fit_curve(x_data, y_data, method, init_params, verbose=False):
     except RuntimeError as e:
         raise RuntimeError(f"Fitting failed: {str(e)}")
     
-def process_data_and_calculate_titer(file_path, sheet_name, output_path, cutoff, method, replicates=2, verbose=False, log_path=None):
+def process_data_and_calculate_titer(file_path, output_path, cutoff, method, replicates=2, verbose=False, log_path=None):
     """
-    Process ELISA data and calculate titer (version supporting variable columns)
+    Process ELISA data and calculate titer (version supporting CSV and Excel)
     
     Parameters:
     -----------
     file_path : str
-        Input Excel file path
-    sheet_name : str
-        Target sheet name
+        Input file path (CSV or Excel)
     output_path : str
         Output Excel file path
     cutoff : float
@@ -297,21 +326,14 @@ def process_data_and_calculate_titer(file_path, sheet_name, output_path, cutoff,
             log_print(f"Cutoff value: {cutoff}")
             log_print(f"Technical replicates: {replicates}")
 
-        # Load workbook and sheet
-        wb = openpyxl.load_workbook(file_path)
-        sheet = wb[sheet_name]
+        # Load data using the new function
+        df = load_data_file(file_path)
         
         # Prepare output workbook
         output_wb = openpyxl.Workbook()
         results_sheet = output_wb.active
         results_sheet.title = "Results"
         plots_sheet = output_wb.create_sheet("Plots")
-        
-        # Load data
-        data = []
-        for row in sheet.iter_rows(values_only=True):
-            data.append(row)
-        df = pd.DataFrame(data)
 
         if verbose:
             log_print("\nData loading details:")
@@ -338,9 +360,21 @@ def process_data_and_calculate_titer(file_path, sheet_name, output_path, cutoff,
         if verbose:
             log_print(f"Evaluated dilution rates: {dilution_rates}")
 
-        # Get sample data
-        sample_names = df.iloc[2:, 0].values
-        df_data = df.iloc[2:, start_col:start_col+num_cols]
+        # Get sample data (starting from row 1, skipping dilution row)
+        sample_names = df.iloc[1:, 0].values
+        df_data = df.iloc[1:, start_col:start_col+num_cols]
+        
+        # Remove any empty rows
+        valid_rows = ~pd.isna(sample_names) & (sample_names != '')
+        sample_names = sample_names[valid_rows]
+        df_data = df_data[valid_rows]
+
+        if verbose:
+            log_print("\nData structure after cleanup:")
+            log_print(f"Number of data rows: {len(sample_names)}")
+            if len(sample_names) > 0:
+                log_print(f"First sample name: {sample_names[0]}")
+                log_print(f"First row data: {df_data.iloc[0].values}")
 
         # Detect data blocks (based on number of replicates)
         blocks = []
@@ -476,7 +510,12 @@ def process_data_and_calculate_titer(file_path, sheet_name, output_path, cutoff,
                         # Create graph
                         jp_font = set_japanese_font()
                         plt.figure(figsize=(10, 6))
-                        plt.semilogx(dilution_rates, y_data, 'o', label='Measured Values')
+
+                        # Calculate standard error for error bars
+                        y_err = replicate_numeric.std().values / np.sqrt(replicates)
+
+                        # Plot with error bars
+                        plt.errorbar(dilution_rates, y_data, yerr=y_err, fmt='o', label='Measured Values', capsize=5)
                         plt.semilogx(dilution_rates, y_fit, '-', label='Fitting Curve')
                         plt.axhline(y=cutoff, color='r', linestyle='--', label='Cutoff')
                         plt.axvline(x=titer, color='g', linestyle='--', label='Antibody Titer')
@@ -556,8 +595,11 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Usage Examples:
-  Basic usage:
+  Basic usage (Excel):
     %(prog)s -i data.xlsx -c 0.2
+  
+  Basic usage (CSV):
+    %(prog)s -i data.csv -c 0.2
   
   Single data analysis:
     %(prog)s -i single_data.xlsx -c 0.15 -r 1
@@ -569,14 +611,13 @@ Usage Examples:
     %(prog)s -i data.xlsx -c 0.2 -v
 
 Input File Format:
-  - Excel format (.xlsx)
-  - Place measurement data in Sheet1
+  - Excel format (.xlsx) or CSV format (.csv)
   - Row 1: Dilution rates
   - Row 2 and beyond: Sample names and measured values
 """)
     
     parser.add_argument('--input', '-i', required=True,
-                       help='Input Excel file')
+                       help='Input file (Excel or CSV format)')
     
     parser.add_argument('--cutoff', '-c', type=float, required=True,
                        help='Cutoff value')
@@ -608,7 +649,6 @@ def main():
         
         num_samples = process_data_and_calculate_titer(
             args.input,
-            'Sheet1',
             output_path,
             args.cutoff,
             args.method,
