@@ -51,8 +51,8 @@ git clone https://github.com/dacchi-s/flexible-endpoint-titer.git
 cd flexible-endpoint-titer
 
 # Create and activate conda environment
-conda env create -f endpoint_titer.yml
-conda activate endpoint-titer-analysis
+conda env create -f flexible-endpoint-titer.yml
+conda activate flexible-endpoint-titer-analysis
 ```
 
 ## help
