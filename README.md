@@ -64,7 +64,7 @@ ELISA Endpoint Titer Analysis Tool - Flexible Data Structure Version
 options:
   -h, --help            show this help message and exit
   --input INPUT, -i INPUT
-                        Input Excel file
+                        Input Excel file or CSV file
   --cutoff CUTOFF, -c CUTOFF
                         Cutoff value
   --method {4,5,auto}, -m {4,5,auto}
@@ -134,8 +134,6 @@ The tool supports various data formats:
 | sample-2 | 0.097 | 0.047 | 0.029 | 0.018 | 0.013 | 0.012 |
 | sample-2 | 0.099 | 0.047 | 0.028 | 0.018 | 0.014 | 0.011 |
 
-基本形式、異なる列数の形式は前回のままで良いですか？または、3つとも表示した方が良いでしょうか？
-
 ### Pattern 2: With Empty Lines
 | Sample   | 100   | 200   | 400   | 800   | 1600  | 3200  |
 |----------|-------|-------|-------|-------|-------|-------|
@@ -144,8 +142,6 @@ The tool supports various data formats:
 |          |       |       |       |       |       |       |
 | sample-2 | 0.097 | 0.047 | 0.029 | 0.018 | 0.013 | 0.012 |
 | sample-2 | 0.099 | 0.047 | 0.028 | 0.018 | 0.014 | 0.011 |
-
-基本形式、異なる列数の形式は前回のままで良いですか？または、3つとも表示した方が良いでしょうか？
 
 ### Pattern 3: Different Block Sizes
 | Sample   | 100   | 200   | 400   | 800   | 
