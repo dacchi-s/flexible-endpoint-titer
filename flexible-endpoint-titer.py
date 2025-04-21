@@ -280,12 +280,6 @@ def fit_curve(x_data, y_data, method, init_params, verbose=False):
 
 def detect_data_blocks(df_data, sample_names, replicates=2, verbose=False, log_print=None):
     """
-    Improved function to detect blocks in ELISA data
-    
-    The original code grouped by sample name prefixes, but
-    this improved version uses blank rows to separate blocks.
-    It also detects blocks directly from the original data.
-    
     Parameters:
     -----------
     df_data : pandas.DataFrame
@@ -371,8 +365,354 @@ def detect_data_blocks(df_data, sample_names, replicates=2, verbose=False, log_p
                     (f" and {len(sample_in_block)-5} more samples" if len(sample_in_block) > 5 else ""))
     
     return valid_blocks
+
+def calculate_titer_with_validation(dilution_rates, y_fit, cutoff, extrapolation_limit=2.0, verbose=False, log_print=None):
+    """
+    Calculate antibody titer with improved handling of cases where the cutoff line
+    does not intersect with the fitted curve within the measured range.
     
-def process_data_and_calculate_titer(file_path, output_path, cutoff, method, replicates=2, verbose=False, log_path=None):
+    Parameters:
+    -----------
+    dilution_rates : array-like
+        Dilution rates (x-axis data)
+    y_fit : array-like
+        Fitted curve values (y-axis data)
+    cutoff : float
+        Cutoff value for determining titer
+    extrapolation_limit : float
+        Maximum factor for extrapolation (default: 2.0)
+    verbose : bool
+        Detailed output flag
+    log_print : function, optional
+        Function for logging
+        
+    Returns:
+    --------
+    tuple : (titer, status, message)
+        - titer: calculated titer value or limit value
+        - status: 'valid', 'below_range', 'above_range', or 'invalid'
+        - message: explanatory message about the result
+    """
+    # Debug information
+    if verbose and log_print:
+        log_print(f"  Titer validation - Cutoff: {cutoff:.4f}")
+        log_print(f"  Y values range from {np.min(y_fit):.4f} to {np.max(y_fit):.4f}")
+        log_print(f"  X values range from {np.min(dilution_rates):.1f} to {np.max(dilution_rates):.1f}")
+        log_print(f"  First few Y values: {y_fit[0:3]}")
+        log_print(f"  Last few Y values: {y_fit[-3:]}")
+    
+    # Check: Get the last dilution rate and its OD value
+    max_dilution = np.max(dilution_rates)
+    max_dilution_idx = np.argmax(dilution_rates)
+    last_od = y_fit[max_dilution_idx]
+    
+    # If the last OD value is above the cutoff, the sample never drops below cutoff
+    if last_od > cutoff:
+        if verbose and log_print:
+            log_print(f"  HIGH TITER DETECTED: Last OD ({last_od:.4f}) at dilution {max_dilution} is above cutoff ({cutoff:.4f})")
+        titer = max_dilution
+        status = 'above_range'
+        message = f"OD values never drop below cutoff ({cutoff:.4f}). Even at highest dilution ({max_dilution}), OD is {last_od:.4f}. Titer is reported as >{titer}."
+        return titer, status, message
+    
+    # Check: Get the first dilution rate and its OD value
+    min_dilution = np.min(dilution_rates)
+    min_dilution_idx = np.argmin(dilution_rates)
+    first_od = y_fit[min_dilution_idx]
+    
+    # If the first OD value is below the cutoff, the sample is already below cutoff at lowest dilution
+    if first_od < cutoff:
+        if verbose and log_print:
+            log_print(f"  LOW TITER DETECTED: First OD ({first_od:.4f}) at dilution {min_dilution} is below cutoff ({cutoff:.4f})")
+        titer = min_dilution
+        status = 'below_range'
+        message = f"OD values are already below cutoff ({cutoff:.4f}) at the lowest dilution ({min_dilution}). Titer is reported as <{titer}."
+        return titer, status, message
+    
+    # Normal case: Find where the curve crosses the cutoff
+    # We need to be careful with the order of the data points
+    # Sort dilution rates and corresponding fitted values
+    sorted_indices = np.argsort(dilution_rates)
+    sorted_x = dilution_rates[sorted_indices]
+    sorted_y = y_fit[sorted_indices]
+    
+    # Find indices where y is above and below cutoff
+    above_cutoff = sorted_y >= cutoff
+    below_cutoff = sorted_y < cutoff
+    
+    # If no transition is found, use the last boundary point
+    if not np.any(below_cutoff) or not np.any(above_cutoff):
+        if verbose and log_print:
+            log_print(f"  Warning: No clear transition found. This should not happen after the previous checks.")
+        
+        # If no values below cutoff, report as above_range
+        if not np.any(below_cutoff):
+            titer = max_dilution
+            status = 'above_range'
+            message = f"No clear transition point found. Titer is reported as >{titer}."
+            return titer, status, message
+        
+        # If no values above cutoff, report as below_range
+        else:
+            titer = min_dilution
+            status = 'below_range'
+            message = f"No clear transition point found. Titer is reported as <{titer}."
+            return titer, status, message
+    
+    # Find the transition point (where the curve crosses the cutoff)
+    # Find the first index where y drops below cutoff
+    transition_idx = None
+    for i in range(len(sorted_y) - 1):
+        if sorted_y[i] >= cutoff and sorted_y[i+1] < cutoff:
+            transition_idx = i
+            break
+    
+    # If a transition is found, interpolate to find the exact titer
+    if transition_idx is not None:
+        x1 = sorted_x[transition_idx]
+        x2 = sorted_x[transition_idx + 1]
+        y1 = sorted_y[transition_idx]
+        y2 = sorted_y[transition_idx + 1]
+        
+        # Linear interpolation
+        titer = x1 + (x2 - x1) * (cutoff - y1) / (y2 - y1)
+        
+        if verbose and log_print:
+            log_print(f"  Transition found between dilutions {x1:.1f} and {x2:.1f}")
+            log_print(f"  Corresponding OD values: {y1:.4f} and {y2:.4f}")
+            log_print(f"  Interpolated titer: {titer:.4f}")
+        
+        status = 'valid'
+        message = f"Titer ({titer:.4f}) is within the measured dilution range."
+        return titer, status, message
+    
+    # Fallback: use numpy's interpolation function
+    try:
+        if verbose and log_print:
+            log_print(f"  Using fallback interpolation method")
+        
+        # Ensure the arrays are sorted correctly for interpolation
+        # Note: np.interp expects x to be increasing
+        interp_x = sorted_x
+        interp_y = sorted_y
+        
+        # Find indices where OD values bracket the cutoff
+        idx_above = np.where(interp_y >= cutoff)[0]
+        idx_below = np.where(interp_y < cutoff)[0]
+        
+        if len(idx_above) > 0 and len(idx_below) > 0:
+            # Find the last point above cutoff and first point below cutoff
+            last_above = np.max(idx_above)
+            first_below = np.min(idx_below)
+            
+            # If they are adjacent, we can interpolate
+            if first_below == last_above + 1:
+                x1 = interp_x[last_above]
+                x2 = interp_x[first_below]
+                y1 = interp_y[last_above]
+                y2 = interp_y[first_below]
+                
+                # Linear interpolation
+                titer = x1 + (x2 - x1) * (cutoff - y1) / (y2 - y1)
+                
+                if verbose and log_print:
+                    log_print(f"  Fallback interpolation successful: titer = {titer:.4f}")
+                
+                status = 'valid'
+                message = f"Titer ({titer:.4f}) is within the measured dilution range."
+                return titer, status, message
+        
+        # If we get here, something unusual happened. Try np.interp directly.
+        titer = np.interp(cutoff, sorted_y[::-1], sorted_x[::-1])
+        
+        if verbose and log_print:
+            log_print(f"  Direct np.interp fallback: titer = {titer:.4f}")
+        
+        status = 'valid'
+        message = f"Titer ({titer:.4f}) was calculated using direct interpolation."
+        return titer, status, message
+        
+    except Exception as e:
+        if verbose and log_print:
+            log_print(f"  Error in interpolation: {str(e)}")
+        
+        # If all else fails, report the closest dilution rate
+        idx = np.argmin(np.abs(sorted_y - cutoff))
+        titer = sorted_x[idx]
+        status = 'valid'
+        message = f"Could not interpolate titer precisely. Closest approximate titer is {titer:.4f}."
+        return titer, status, message
+
+def extended_regression_model(x, y, cutoff, model_type='4PL', verbose=False, log_print=None):
+    """
+    Extend the regression model beyond the measured range to estimate titers
+    in cases where the cutoff doesn't intersect with the curve.
+    
+    Parameters:
+    -----------
+    x : array-like
+        x-axis data (dilution rates)
+    y : array-like
+        y-axis data (measured values)
+    cutoff : float
+        Cutoff value
+    model_type : str
+        Regression model type ('4PL' or '5PL')
+    verbose : bool
+        Detailed output flag
+    log_print : function, optional
+        Function for logging
+        
+    Returns:
+    --------
+    tuple : (titer, status, message)
+        - titer: estimated titer value
+        - status: 'extrapolated' or 'failed'
+        - message: explanatory message
+    """
+    try:
+        # Debug information
+        if verbose and log_print:
+            log_print(f"  Attempting extrapolation with {model_type} model")
+            log_print(f"  Input data range: x from {np.min(x):.1f} to {np.max(x):.1f}, y from {np.min(y):.4f} to {np.max(y):.4f}")
+        
+        # Sort input data by dilution rate
+        sort_idx = np.argsort(x)
+        x_sorted = x[sort_idx]
+        y_sorted = y[sort_idx]
+        
+        # Extend the x-range for extrapolation
+        min_x = np.min(x_sorted)
+        max_x = np.max(x_sorted)
+        
+        # Create extended range - go 10x lower and 10x higher
+        extended_x = np.logspace(
+            np.log10(min_x / 10), 
+            np.log10(max_x * 10),
+            num=1000
+        )
+        
+        # Get initial parameters
+        init_params = get_initial_params(y_sorted, x_sorted)
+        
+        if verbose and log_print:
+            log_print(f"  Initial parameters: A={init_params['A']:.4f}, B={init_params['B']:.4f}, C={init_params['C']:.4f}, D={init_params['D']:.4f}" + 
+                     (f", E={init_params['E']:.4f}" if model_type == '5PL' else ""))
+        
+        # Fit the extended model
+        if model_type == '4PL':
+            bounds = ([0, 0.5, 0, 0], [np.inf, 10, np.inf, np.inf])
+            p0 = [init_params['A'], init_params['B'], init_params['C'], init_params['D']]
+            popt, _ = curve_fit(four_pl, x_sorted, y_sorted, p0=p0, bounds=bounds, maxfev=50000)
+            extended_y = four_pl(extended_x, *popt)
+            if verbose and log_print:
+                log_print(f"  Fitted parameters: A={popt[0]:.4f}, B={popt[1]:.4f}, C={popt[2]:.4f}, D={popt[3]:.4f}")
+        else:  # 5PL
+            bounds = ([0, 0.5, 0, 0, 0.5], [np.inf, 10, np.inf, np.inf, 5])
+            p0 = [init_params['A'], init_params['B'], init_params['C'], init_params['D'], init_params['E']]
+            popt, _ = curve_fit(five_pl, x_sorted, y_sorted, p0=p0, bounds=bounds, maxfev=50000)
+            extended_y = five_pl(extended_x, *popt)
+            if verbose and log_print:
+                log_print(f"  Fitted parameters: A={popt[0]:.4f}, B={popt[1]:.4f}, C={popt[2]:.4f}, D={popt[3]:.4f}, E={popt[4]:.4f}")
+        
+        # Check the extended range
+        min_extended_y = np.min(extended_y)
+        max_extended_y = np.max(extended_y)
+        
+        if verbose and log_print:
+            log_print(f"  Extended model range: y from {min_extended_y:.4f} to {max_extended_y:.4f}")
+            
+        # Check if the cutoff intersects the extended curve
+        # First, are all values above cutoff?
+        if min_extended_y > cutoff:
+            if verbose and log_print:
+                log_print(f"  Extended model never drops below cutoff ({cutoff:.4f})")
+            titer = max_x * 10  # Report a very high titer (beyond extrapolation)
+            status = 'extrapolated'
+            message = f"Even with extrapolation to {titer:.1f}, the curve doesn't drop below cutoff ({cutoff:.4f}). Titer is reported as >{max_x}."
+            return titer, status, message
+            
+        # Second, are all values below cutoff?
+        if max_extended_y < cutoff:
+            if verbose and log_print:
+                log_print(f"  Extended model never rises above cutoff ({cutoff:.4f})")
+            titer = min_x / 10  # Report a very low titer (beyond extrapolation)
+            status = 'extrapolated'
+            message = f"Even with extrapolation to {titer:.1f}, the curve doesn't rise above cutoff ({cutoff:.4f}). Titer is reported as <{min_x}."
+            return titer, status, message
+            
+        # Normal case: Find the transition point in the extended curve
+        # Sort the extended data to ensure proper order
+        sort_idx = np.argsort(extended_x)
+        sorted_extended_x = extended_x[sort_idx]
+        sorted_extended_y = extended_y[sort_idx]
+        
+        # Find the transition point (where the curve crosses the cutoff)
+        transition_idx = None
+        for i in range(len(sorted_extended_y) - 1):
+            if sorted_extended_y[i] >= cutoff and sorted_extended_y[i+1] < cutoff:
+                transition_idx = i
+                break
+        
+        # If a transition is found, interpolate to find the exact titer
+        if transition_idx is not None:
+            x1 = sorted_extended_x[transition_idx]
+            x2 = sorted_extended_x[transition_idx + 1]
+            y1 = sorted_extended_y[transition_idx]
+            y2 = sorted_extended_y[transition_idx + 1]
+            
+            # Linear interpolation
+            titer = x1 + (x2 - x1) * (cutoff - y1) / (y2 - y1)
+            
+            if verbose and log_print:
+                log_print(f"  Transition found in extended model at titer = {titer:.4f}")
+            
+            # Check if the titer is outside the original measurement range
+            if titer > max_x:
+                message = f"Extrapolated titer ({titer:.4f}) is above the highest measured dilution ({max_x}). Reported as >{max_x}."
+                status = 'extrapolated'
+                if verbose and log_print:
+                    log_print(f"  Reporting as high titer (>{max_x})")
+                return max_x, status, message
+            elif titer < min_x:
+                message = f"Extrapolated titer ({titer:.4f}) is below the lowest measured dilution ({min_x}). Reported as <{min_x}."
+                status = 'extrapolated'
+                if verbose and log_print:
+                    log_print(f"  Reporting as low titer (<{min_x})")
+                return min_x, status, message
+            else:
+                message = f"Extrapolated titer ({titer:.4f}) is within the measurement range. Extrapolation was successful."
+                status = 'extrapolated'
+                if verbose and log_print:
+                    log_print(f"  Extrapolation successful")
+                return titer, status, message
+        
+        # Fallback: Use numpy's interpolation
+        if verbose and log_print:
+            log_print(f"  No clear transition found in extended model. Using fallback method.")
+            
+        # Use np.interp with sorted arrays
+        titer = np.interp(cutoff, sorted_extended_y[::-1], sorted_extended_x[::-1])
+        
+        if titer > max_x:
+            message = f"Extrapolated titer ({titer:.4f}) is above the highest measured dilution ({max_x}). Reported as >{max_x}."
+            status = 'extrapolated'
+            return max_x, status, message
+        elif titer < min_x:
+            message = f"Extrapolated titer ({titer:.4f}) is below the lowest measured dilution ({min_x}). Reported as <{min_x}."
+            status = 'extrapolated'
+            return min_x, status, message
+        else:
+            message = f"Extrapolated titer ({titer:.4f}) was calculated using interpolation in the extended model."
+            status = 'extrapolated'
+            return titer, status, message
+                
+    except Exception as e:
+        if verbose and log_print:
+            log_print(f"  Extrapolation failed: {str(e)}")
+        return None, 'failed', f"Extrapolation failed: {str(e)}"
+
+def process_data_and_calculate_titer(file_path, output_path, cutoff, method, replicates=2, verbose=False, log_path=None, allow_extrapolation=False):
     """
     Process ELISA data and calculate titer (version supporting CSV and Excel)
     
@@ -392,6 +732,8 @@ def process_data_and_calculate_titer(file_path, output_path, cutoff, method, rep
         Detailed output flag
     log_path : str, optional
         Log file path
+    allow_extrapolation : bool
+        Allow extrapolation beyond measured range
     
     Returns:
     --------
@@ -420,6 +762,7 @@ def process_data_and_calculate_titer(file_path, output_path, cutoff, method, rep
             log_print(f"Method: {method}PL fitting")
             log_print(f"Cutoff value: {cutoff}")
             log_print(f"Number of technical replicates: {replicates}")
+            log_print(f"Allow extrapolation: {allow_extrapolation}")
 
         # Load data using the new function
         df = load_data_file(file_path)
@@ -483,9 +826,10 @@ def process_data_and_calculate_titer(file_path, output_path, cutoff, method, rep
         if not blocks:
             raise ValueError("No valid data blocks found")
 
-        # DataFrame for storing results
+        # DataFrame for storing results - Add new columns for titer status
         results_df = pd.DataFrame(columns=[
-            'Sample', 'Titer', 'R2', 'Adjusted_R2', 'RMSE', 'Fitting_Method'
+            'Sample', 'Titer', 'Titer_Status', 'Titer_Note', 'R2', 'Adjusted_R2', 
+            'RMSE', 'Fitting_Method'
         ])
         
         # Process each block
@@ -499,8 +843,7 @@ def process_data_and_calculate_titer(file_path, output_path, cutoff, method, rep
             # Execute data processing according to number of replicates
             for sample_idx in range(0, end_row - start_row + 1, replicates):
                 try:
-                    # Calculate row position for plot placement - defined BEFORE the try block
-                    # This fixes the row_position error from the original code
+                    # Calculate row position for plot placement
                     row_position = 30 + (block_idx * 30) + ((sample_idx // replicates) * 30)
                     
                     # Get replicate data and calculate average
@@ -571,13 +914,50 @@ def process_data_and_calculate_titer(file_path, output_path, cutoff, method, rep
                                 dilution_rates, y_data, method, init_params, verbose
                             )
 
-                        # Calculate titer (intersection of curve and cutoff)
-                        titer = np.interp(cutoff, y_fit[::-1], dilution_rates[::-1])
+                        # Calculate titer with enhanced validation
+                        titer, titer_status, titer_message = calculate_titer_with_validation(
+                            dilution_rates, y_fit, cutoff, verbose=verbose, log_print=log_print
+                        )
+                        
+                        # Try extrapolation if titer is out of range and extrapolation is allowed
+                        if allow_extrapolation and titer_status in ['below_range', 'above_range']:
+                            if verbose:
+                                log_print(f"  Attempting extrapolation for {sample_name}...")
+                                
+                            extrap_titer, extrap_status, extrap_message = extended_regression_model(
+                                dilution_rates, y_data, cutoff, model_type=f"{final_method}PL",
+                                verbose=verbose, log_print=log_print
+                            )
+                            
+                            if extrap_status == 'extrapolated':
+                                titer = extrap_titer
+                                titer_status = 'extrapolated'
+                                titer_message = extrap_message
+                                if verbose:
+                                    log_print(f"  Extrapolation successful: {titer_message}")
+                            else:
+                                if verbose:
+                                    log_print(f"  Extrapolation did not improve result: {extrap_message}")
+
+                        # Format titer display value based on status
+                        if titer_status == 'below_range':
+                            titer_display = f"<{titer:.1f}"
+                        elif titer_status == 'above_range':
+                            titer_display = f">{titer:.1f}"
+                        else:
+                            titer_display = f"{titer:.1f}"
+                            
+                        if verbose:
+                            log_print(f"  Titer calculation result: {titer_display}")
+                            log_print(f"  Status: {titer_status}")
+                            log_print(f"  Note: {titer_message}")
 
                         # Add results to DataFrame
                         new_row = pd.DataFrame([{
                             'Sample': sample_name,
                             'Titer': titer,
+                            'Titer_Status': titer_status,
+                            'Titer_Note': titer_message,
                             'R2': metrics['R2'],
                             'Adjusted_R2': metrics['Adjusted_R2'],
                             'RMSE': metrics['RMSE'],
@@ -592,16 +972,59 @@ def process_data_and_calculate_titer(file_path, output_path, cutoff, method, rep
                         # Calculate standard error for error bars
                         y_err = replicate_numeric.std().values / np.sqrt(replicates)
 
-                        # Plot with error bars
+                        # Get extended x-range for plotting the full curve
+                        if titer_status in ['below_range', 'above_range', 'extrapolated']:
+                            # Extended x-range for better visualization
+                            min_x = np.min(dilution_rates)
+                            max_x = np.max(dilution_rates)
+                            extended_x = np.logspace(
+                                np.log10(min_x / 5), 
+                                np.log10(max_x * 5),
+                                num=1000
+                            )
+                            
+                            # Extended y values for plotting
+                            if final_method == '4':
+                                extended_y = four_pl(extended_x, *popt)
+                            else:
+                                extended_y = five_pl(extended_x, *popt)
+                                
+                            # Plot the extended curve as a dotted line
+                            plt.semilogx(extended_x, extended_y, ':', color='blue', alpha=0.5, label='Extended Curve')
+                        
+                        # Plot with error bars - actual data points
                         plt.errorbar(dilution_rates, y_data, yerr=y_err, fmt='o', label='Measured Values', capsize=5)
-                        plt.semilogx(dilution_rates, y_fit, '-', label='Fitting Curve')
+                        
+                        # Plot the fitted curve through the measured range
+                        plt.semilogx(dilution_rates, y_fit, '-', color='blue', label='Fitting Curve')
+                        
+                        # Plot cutoff line
                         plt.axhline(y=cutoff, color='r', linestyle='--', label='Cutoff')
-                        plt.axvline(x=titer, color='g', linestyle='--', label='Antibody Titer')
+                        
+                        # Plot titer line - with different styles based on status
+                        if titer_status == 'valid':
+                            plt.axvline(x=titer, color='g', linestyle='--', label=f'Titer: {titer_display}')
+                        elif titer_status == 'extrapolated':
+                            plt.axvline(x=titer, color='orange', linestyle='--', label=f'Titer (extrapolated): {titer_display}')
+                        elif titer_status == 'below_range':
+                            plt.axvline(x=titer, color='purple', linestyle=':', label=f'Titer (below range): {titer_display}')
+                        elif titer_status == 'above_range':
+                            plt.axvline(x=titer, color='purple', linestyle=':', label=f'Titer (above range): {titer_display}')
+                            
                         plt.xlabel('Dilution Rate', fontproperties=jp_font)
                         plt.ylabel('Absorbance', fontproperties=jp_font)
                         plt.title(f'{sample_name} ({final_method}PL Fitting)', fontproperties=jp_font)
                         plt.legend(prop=jp_font)
                         plt.grid(True)
+                        
+                        # Add titer status annotation to the plot
+                        status_text = f"Status: {titer_status}\n"
+                        if titer_status != 'valid':
+                            status_text += f"Note: {titer_message}"
+                            
+                        plt.annotate(status_text, xy=(0.02, 0.02), xycoords='axes fraction',
+                                    bbox=dict(boxstyle="round,pad=0.3", fc="yellow", alpha=0.3),
+                                    fontsize=8, fontproperties=jp_font)
 
                         # Save plot
                         img_buffer = io.BytesIO()
@@ -668,7 +1091,7 @@ def process_data_and_calculate_titer(file_path, output_path, cutoff, method, rep
 def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(
-        description='ELISA Endpoint Titer Analysis Tool - Flexible Data Structure Version',
+        description='ELISA Endpoint Titer Analysis Tool - Enhanced Version with Out-of-Range Detection',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Usage Examples:
@@ -683,6 +1106,9 @@ Usage Examples:
   
   Specify 4PL fitting:
     %(prog)s -i data.xlsx -c 0.2 -m 4
+    
+  Allow extrapolation beyond measured range:
+    %(prog)s -i data.xlsx -c 0.2 -e
   
   Output detailed analysis information:
     %(prog)s -i data.xlsx -c 0.2 -v
@@ -706,6 +1132,9 @@ Input File Format:
     parser.add_argument('--replicates', '-r', type=int, choices=[1, 2],
                        default=2,
                        help='Number of technical replicates (1: single, 2: duplicate) Default: 2')
+    
+    parser.add_argument('--extrapolation', '-e', action='store_true',
+                       help='Allow extrapolation for out-of-range titers')
     
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Display detailed output')
@@ -731,7 +1160,8 @@ def main():
             args.method,
             args.replicates,
             args.verbose,
-            log_path
+            log_path,
+            args.extrapolation
         )
         
         print(f"Processing complete: {num_samples} samples analyzed")
