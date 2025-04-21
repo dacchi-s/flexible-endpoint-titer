@@ -277,6 +277,100 @@ def fit_curve(x_data, y_data, method, init_params, verbose=False):
 
     except RuntimeError as e:
         raise RuntimeError(f"Fitting failed: {str(e)}")
+
+def detect_data_blocks(df_data, sample_names, replicates=2, verbose=False, log_print=None):
+    """
+    Improved function to detect blocks in ELISA data
+    
+    The original code grouped by sample name prefixes, but
+    this improved version uses blank rows to separate blocks.
+    It also detects blocks directly from the original data.
+    
+    Parameters:
+    -----------
+    df_data : pandas.DataFrame
+        Input data frame containing the measurements
+    sample_names : array-like
+        Array of sample names
+    replicates : int
+        Number of technical replicates
+    verbose : bool
+        Detailed output flag
+    log_print : function, optional
+        Function for logging
+    
+    Returns:
+    --------
+    list : List of tuples (start_row, end_row) for each block
+    """
+    blocks = []
+    
+    # First, identify only rows with actual sample data
+    # Skip NaN or empty sample names
+    valid_data_rows = []
+    for i, name in enumerate(sample_names):
+        if not pd.isna(name) and name != '':
+            # Check if the data row has all NaN values
+            row_data = pd.to_numeric(df_data.iloc[i], errors='coerce')
+            if not row_data.isna().all():
+                valid_data_rows.append(i)
+    
+    if verbose and log_print:
+        log_print(f"Number of valid data rows: {len(valid_data_rows)}")
+        if valid_data_rows:
+            log_print(f"First valid row: {valid_data_rows[0]+1}, Last valid row: {valid_data_rows[-1]+1}")
+    
+    if not valid_data_rows:
+        return []  # Return empty list if no valid data rows
+        
+    # Block detection
+    # Using multiple detection criteria:
+    # 1. Blank rows or NaN rows
+    # 2. Number of replicates (usually 2 or 3)
+    # 3. Plate layout (e.g., 8 rows × 12 columns)
+    
+    # Split blocks by blank rows
+    current_block_start = valid_data_rows[0]
+    
+    for i in range(1, len(valid_data_rows)):
+        curr_row = valid_data_rows[i]
+        prev_row = valid_data_rows[i-1]
+        
+        # Start a new block if rows are not consecutive
+        if curr_row > prev_row + 1:
+            blocks.append((current_block_start, prev_row))
+            current_block_start = curr_row
+    
+    # Add the last block
+    if valid_data_rows:
+        blocks.append((current_block_start, valid_data_rows[-1]))
+    
+    # Check minimum block size
+    valid_blocks = []
+    for start, end in blocks:
+        # Check if the block has at least twice the number of replicates in rows
+        # (corresponding to at least 2 samples)
+        if end - start + 1 >= replicates * 2:
+            valid_blocks.append((start, end))
+        elif verbose and log_print:
+            log_print(f"Warning: Skipping block that is too small: rows {start+1} to {end+1}")
+    
+    # If no blocks were detected, treat everything as one block
+    if not valid_blocks and valid_data_rows:
+        valid_blocks = [(valid_data_rows[0], valid_data_rows[-1])]
+        if verbose and log_print:
+            log_print("No blocks detected, processing all data as one block")
+    
+    if verbose and log_print:
+        log_print(f"\nDetected data blocks:")
+        for i, (start, end) in enumerate(valid_blocks):
+            log_print(f"Block {i+1}: rows {start+1} to {end+1}")
+            # Show sample names in each block
+            sample_in_block = [sample_names[j] for j in range(start, end+1) if not pd.isna(sample_names[j])]
+            log_print(f"  Samples: {', '.join(str(s) for s in sample_in_block[:min(5, len(sample_in_block))])}" + 
+                    (f" and {len(sample_in_block)-5} more samples" if len(sample_in_block) > 5 else ""))
+    
+    return valid_blocks
     
 def process_data_and_calculate_titer(file_path, output_path, cutoff, method, replicates=2, verbose=False, log_path=None):
     """
@@ -322,9 +416,10 @@ def process_data_and_calculate_titer(file_path, output_path, cutoff, method, rep
     try:
         if verbose:
             log_print(f"Processing started: {file_path}")
+            log_print(f"File format: {Path(file_path).suffix}")
             log_print(f"Method: {method}PL fitting")
             log_print(f"Cutoff value: {cutoff}")
-            log_print(f"Technical replicates: {replicates}")
+            log_print(f"Number of technical replicates: {replicates}")
 
         # Load data using the new function
         df = load_data_file(file_path)
@@ -358,7 +453,8 @@ def process_data_and_calculate_titer(file_path, output_path, cutoff, method, rep
         dilution_rates = np.array(evaluated_rates, dtype=float)
 
         if verbose:
-            log_print(f"Evaluated dilution rates: {dilution_rates}")
+            log_print(f"Found dilution rates: {dilution_rates}")
+            log_print(f"Evaluated dilution rates: {evaluated_rates}")
 
         # Get sample data (starting from row 1, skipping dilution row)
         sample_names = df.iloc[1:, 0].values
@@ -376,30 +472,8 @@ def process_data_and_calculate_titer(file_path, output_path, cutoff, method, rep
                 log_print(f"First sample name: {sample_names[0]}")
                 log_print(f"First row data: {df_data.iloc[0].values}")
 
-        # Detect data blocks (based on number of replicates)
-        blocks = []
-        row = 0
-        while row < len(df_data):
-            try:
-                row_data = pd.to_numeric(df_data.iloc[row], errors='coerce')
-                if not row_data.isna().all() and row + replicates <= len(df_data):
-                    # Detect blocks where sample names are the same
-                    current_sample = sample_names[row]
-                    block_end = row + replicates
-                    
-                    # Expand block while sample names continue
-                    while (block_end < len(df_data) and 
-                        sample_names[block_end-1] == current_sample):
-                        block_end = block_end + replicates
-                    
-                    blocks.append((row, block_end-1))
-                    row = block_end
-                else:
-                    row += 1
-            except Exception as e:
-                if verbose:
-                    log_print(f"Error processing row {row}: {str(e)}")
-                row += 1
+        # Use enhanced block detection
+        blocks = detect_data_blocks(df_data, sample_names, replicates, verbose, log_print)
 
         if verbose:
             log_print(f"\nDetected data blocks:")
@@ -417,7 +491,7 @@ def process_data_and_calculate_titer(file_path, output_path, cutoff, method, rep
         # Process each block
         for block_idx, (start_row, end_row) in enumerate(blocks):
             if verbose:
-                log_print(f"\nStarting block {block_idx+1} processing:")
+                log_print(f"\nStarting processing of block {block_idx+1}:")
                 log_print(f"Row range: {start_row+1} to {end_row+1}")
 
             block_data = df_data.iloc[start_row:end_row+1]
@@ -425,6 +499,10 @@ def process_data_and_calculate_titer(file_path, output_path, cutoff, method, rep
             # Execute data processing according to number of replicates
             for sample_idx in range(0, end_row - start_row + 1, replicates):
                 try:
+                    # Calculate row position for plot placement - defined BEFORE the try block
+                    # This fixes the row_position error from the original code
+                    row_position = 30 + (block_idx * 30) + ((sample_idx // replicates) * 30)
+                    
                     # Get replicate data and calculate average
                     replicate_data = block_data.iloc[sample_idx:sample_idx+replicates]
                     replicate_numeric = replicate_data.apply(pd.to_numeric, errors='coerce')
@@ -528,6 +606,7 @@ def process_data_and_calculate_titer(file_path, output_path, cutoff, method, rep
                         # Save plot
                         img_buffer = io.BytesIO()
                         plt.savefig(img_buffer, format='png', dpi=300)
+                        img_buffer.seek(0)  # Reset buffer position to the beginning
 
                         # Save as individual PNG file
                         plot_dir = Path(output_path).parent / 'plots'
@@ -541,18 +620,16 @@ def process_data_and_calculate_titer(file_path, output_path, cutoff, method, rep
                         img = Image(img_buffer)
                         img.width = 600
                         img.height = 400
-                        row_position = 30 + block_idx * 30  # Adjust spacing between plots
                         
-                        if row_position >= 1:
-                            plots_sheet.cell(row=row_position-1, column=1, value=sample_name)
-                            plots_sheet.add_image(img, f'A{row_position}')
+                        plots_sheet.cell(row=row_position-1, column=1, value=sample_name)
+                        plots_sheet.add_image(img, f'A{row_position}')
 
-                            if verbose:
-                                log_print(f"Plot placement: Sample {sample_name} placed in row {row_position}")
+                        if verbose:
+                            log_print(f"Plot placement: Sample {sample_name} placed in row {row_position}")
 
                     except Exception as e:
                         log_print(f"Warning: Error during fitting for {sample_name}: {str(e)}")
-                
+                    
                 except Exception as e:
                     log_print(f"Warning: Error processing block {block_idx+1}, sample {sample_idx//replicates + 1}: {str(e)}")
 
